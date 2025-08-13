@@ -1,0 +1,10 @@
+{
+  "name": "worker-service",
+  "version": "1.0.0",
+  "dependencies": {
+    "node-cron": "^3.0.3"
+  },
+  "scripts": {
+    "start": "node worker.js"
+  }
+}

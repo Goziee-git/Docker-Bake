@@ -1,0 +1,14 @@
+FROM node:18-alpine
+
+# Install common system dependencies
+RUN apk add --no-cache curl
+
+# Set working directory
+WORKDIR /app
+
+# Copy and install shared dependencies
+COPY package.json ./
+RUN npm install --production
+
+# This layer will be cached and reused by other services
+RUN echo "Shared base layer created at $(date)" > /app/build-info.txt
