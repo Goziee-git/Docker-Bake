@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker Bake Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .service { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 8px; }
+        button { background: #007cba; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #005a87; }
+        #data { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Docker Bake Demo Application</h1>
+        
+        <div class="service">
+            <h2>API Service</h2>
+            <button onclick="fetchData()">Fetch Data from API</button>
+            <div id="data"></div>
+        </div>
+        
+        <div class="service">
+            <h2>Build Information</h2>
+            <p>This application demonstrates Docker Bake with shared build cache.</p>
+            <p>All services share a common base image with shared dependencies.</p>
+        </div>
+    </div>
+
+    <script>
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/data');
+                const data = await response.json();
+                document.getElementById('data').innerHTML = 
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            } catch (error) {
+                document.getElementById('data').innerHTML = 
+                    '<p style="color: red;">Error: ' + error.message + '</p>';
+            }
+        }
+    </script>
+</body>
+</html>
