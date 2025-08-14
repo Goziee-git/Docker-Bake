@@ -15,7 +15,7 @@ variable "REGISTRY" {
   # Default registry where images will be pushed
   # localhost:5000 is commonly used for local development with a local registry
   # In production, this might be something like "your-company.dkr.ecr.us-west-2.amazonaws.com"
-  default = "localhost:5000"
+  default = "opsmithe"
 }
 
 variable "TAG" {

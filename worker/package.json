@@ -2,7 +2,10 @@
   "name": "worker-service",
   "version": "1.0.0",
   "dependencies": {
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "lodash": "^4.17.21",
+    "moment": "^2.29.4",
+    "axios": "^1.6.0"
   },
   "scripts": {
     "start": "node worker.js"

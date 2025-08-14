@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   api:
-    image: localhost:5000/myapp-api:latest
+    image: opsmithe/myapp-api:latest
     ports:
       - "3000:3000"
     environment:
@@ -14,14 +12,14 @@ services:
       retries: 3
 
   worker:
-    image: localhost:5000/myapp-worker:latest
+    image: opsmithe/myapp-worker:latest
     environment:
       - NODE_ENV=development
     depends_on:
       - api
 
   frontend:
-    image: localhost:5000/myapp-frontend:latest
+    image: opsmithe/myapp-frontend:latest
     ports:
       - "8080:8080"
     environment:
