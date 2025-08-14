@@ -2,6 +2,23 @@
 
 This project demonstrates Docker Buildx Bake for building multiple images with shared dependencies and leveraging build cache for efficient image builds.
 
+## Why Docker Bake Matters (The Simple Truth)
+
+**The Problem**: When you have multiple services that use the same dependencies (like Node.js, Python packages, or system libraries), traditional Docker builds waste time and resources by rebuilding the same layers over and over again.
+
+**The Solution**: Docker Bake lets you build a shared base layer once, then build all your services concurrently using that shared layer. This means:
+
+- **Build the shared stuff once** - All common dependencies go into a base image
+- **Build services in parallel** - Each service builds at the same time using the shared base
+- **Skip rebuilding unchanged parts** - Only rebuild what actually changed
+- **Save massive amounts of time** - Instead of 10 minutes per service, build all services in 2 minutes total
+
+**Real Example**: 
+- Traditional way: Build API (5 min) → Build Worker (5 min) → Build Frontend (3 min) = **13 minutes**
+- Bake way: Build Base (3 min) → Build API + Worker + Frontend together (2 min) = **5 minutes**
+
+When you change just one line of code in the API, traditional builds rebuild everything. Bake only rebuilds the API service using the cached base layer.
+
 ## Table of Contents
 - [Project Overview](#project-overview)
 - [Engineering Benefits](#engineering-benefits)
@@ -75,7 +92,8 @@ docker-bake/
 └── scripts/
     ├── build-traditional.sh     # Traditional docker build
     ├── build-bake.sh           # Docker bake build
-    └── build-depot.sh          # Depot build
+    ├── build-depot.sh          # Depot build
+    └── compare-build-times.sh  # Compare build times between traditional and bake
 ```
 
 ## Basic Docker Build vs Bake
@@ -97,7 +115,8 @@ docker build -t myapp-frontend ./frontend
 
 ### Docker Bake Approach
 ```bash
-# Build all images with dependencies
+# Build all images with dependencies and (push to remote docker registry set in the VARIABLE of the docker-bake.hcl file) docker buildx bake --push
+
 docker buildx bake
 
 # Benefits:
@@ -107,545 +126,70 @@ docker buildx bake
 # - Declarative configuration
 ```
 
-## Hands-on Examples
+**NOTE** In the case here we have the docker-compose.yml file and the docker-bake.hcl file, the invocation order of the buildx bake command will attempt to execute the compose file before the bake file so prevent this behaviour you should run the bake command with the specific name of the file you wish to build using docker bake.
+example: ```docker buildx bake -f docker-bake.hcl```
 
-### Step 1: Setup Project Files
-
-First, let's create our basic application files:
+In order to use bake images using docker bake, we need to create a temporary directory where build caches will be stored you have to make sure that you have created a buildx.cache/ directory in the /tmp/
+```mkdir -p /tmp/.buildx-cache```
 
 ```bash
-# Navigate to project directory
-cd docker-bake
+##youll notice that it throws an error here
 
-# Create all necessary directories
-mkdir -p shared api worker frontend scripts
+ERROR: Cache export is not supported for the docker driver.
+Switch to a different driver, or turn on the containerd image store, and try again.
 ```
+ISSUE: DOcker default driver dosen't support cache export, so we need to create a buildx instance that supports caching
 
-### Step 2: Create Shared Base
-
-The shared base contains common dependencies used by multiple services.
-
-**shared/package.json**:
-```json
-{
-  "name": "shared-base",
-  "version": "1.0.0",
-  "dependencies": {
-    "lodash": "^4.17.21",
-    "moment": "^2.29.4",
-    "axios": "^1.6.0"
-  }
-}
-```
-
-**shared/Dockerfile.base**:
-```dockerfile
-FROM node:18-alpine
-
-# Install common system dependencies
-RUN apk add --no-cache curl
-
-# Set working directory
-WORKDIR /app
-
-# Copy and install shared dependencies
-COPY package.json ./
-RUN npm install --production
-
-# This layer will be cached and reused by other services
-RUN echo "Shared base layer created at $(date)" > /app/build-info.txt
-```
-
-### Step 3: Create API Service
-
-**api/package.json**:
-```json
-{
-  "name": "api-service",
-  "version": "1.0.0",
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5"
-  },
-  "scripts": {
-    "start": "node server.js"
-  }
-}
-```
-
-**api/server.js**:
-```javascript
-const express = require('express');
-const cors = require('cors');
-const _ = require('lodash');
-const moment = require('moment');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(cors());
-app.use(express.json());
-
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    timestamp: moment().format(),
-    service: 'api'
-  });
-});
-
-app.get('/data', (req, res) => {
-  const data = _.range(1, 11).map(i => ({
-    id: i,
-    name: `Item ${i}`,
-    created: moment().subtract(i, 'days').format()
-  }));
-  
-  res.json(data);
-});
-
-app.listen(PORT, () => {
-  console.log(`API Server running on port ${PORT}`);
-});
-```
-
-**api/Dockerfile**:
-```dockerfile
-# Use our shared base
-FROM myapp-base:latest
-
-# Copy API-specific dependencies
-COPY package.json ./
-RUN npm install --production
-
-# Copy application code
-COPY server.js ./
-
-# Expose port
-EXPOSE 3000
-
-# Start the application
-CMD ["npm", "start"]
-```
-
-**api/.dockerignore**:
-```
-node_modules
-npm-debug.log
-.git
-.gitignore
-README.md
-```
-
-### Step 4: Create Worker Service
-
-**worker/package.json**:
-```json
-{
-  "name": "worker-service",
-  "version": "1.0.0",
-  "dependencies": {
-    "node-cron": "^3.0.3"
-  },
-  "scripts": {
-    "start": "node worker.js"
-  }
-}
-```
-
-**worker/worker.js**:
-```javascript
-const cron = require('node-cron');
-const _ = require('lodash');
-const moment = require('moment');
-const axios = require('axios');
-
-console.log('Worker service starting...');
-
-// Simulate background job every 30 seconds
-cron.schedule('*/30 * * * * *', async () => {
-  const timestamp = moment().format();
-  const randomData = _.random(1, 100);
-  
-  console.log(`[${timestamp}] Processing job with data: ${randomData}`);
-  
-  // Simulate some work
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  console.log(`[${timestamp}] Job completed`);
-});
-
-console.log('Worker service started. Jobs scheduled.');
-
-// Keep the process running
-process.on('SIGTERM', () => {
-  console.log('Worker service shutting down...');
-  process.exit(0);
-});
-```
-
-**worker/Dockerfile**:
-```dockerfile
-# Use our shared base
-FROM myapp-base:latest
-
-# Copy worker-specific dependencies
-COPY package.json ./
-RUN npm install --production
-
-# Copy application code
-COPY worker.js ./
-
-# Start the application
-CMD ["npm", "start"]
-```
-
-**worker/.dockerignore**:
-```
-node_modules
-npm-debug.log
-.git
-.gitignore
-README.md
-```
-
-### Step 5: Create Frontend Service
-
-**frontend/package.json**:
-```json
-{
-  "name": "frontend-service",
-  "version": "1.0.0",
-  "dependencies": {
-    "express": "^4.18.2"
-  },
-  "scripts": {
-    "start": "node server.js"
-  }
-}
-```
-
-**frontend/index.html**:
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Docker Bake Demo</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .service { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 8px; }
-        button { background: #007cba; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #005a87; }
-        #data { margin-top: 20px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Docker Bake Demo Application</h1>
-        
-        <div class="service">
-            <h2>API Service</h2>
-            <button onclick="fetchData()">Fetch Data from API</button>
-            <div id="data"></div>
-        </div>
-        
-        <div class="service">
-            <h2>Build Information</h2>
-            <p>This application demonstrates Docker Bake with shared build cache.</p>
-            <p>All services share a common base image with shared dependencies.</p>
-        </div>
-    </div>
-
-    <script>
-        async function fetchData() {
-            try {
-                const response = await fetch('/api/data');
-                const data = await response.json();
-                document.getElementById('data').innerHTML = 
-                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
-            } catch (error) {
-                document.getElementById('data').innerHTML = 
-                    '<p style="color: red;">Error: ' + error.message + '</p>';
-            }
-        }
-    </script>
-</body>
-</html>
-```
-
-**frontend/server.js**:
-```javascript
-const express = require('express');
-const path = require('path');
-const axios = require('axios');
-
-const app = express();
-const PORT = process.env.PORT || 8080;
-const API_URL = process.env.API_URL || 'http://api:3000';
-
-// Serve static files
-app.use(express.static(__dirname));
-
-// Proxy API requests
-app.get('/api/*', async (req, res) => {
-  try {
-    const apiPath = req.path.replace('/api', '');
-    const response = await axios.get(`${API_URL}${apiPath}`);
-    res.json(response.data);
-  } catch (error) {
-    res.status(500).json({ error: 'API request failed' });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`Frontend server running on port ${PORT}`);
-});
-```
-
-**frontend/Dockerfile**:
-```dockerfile
-# Use our shared base
-FROM myapp-base:latest
-
-# Copy frontend-specific dependencies
-COPY package.json ./
-RUN npm install --production
-
-# Copy application files
-COPY server.js ./
-COPY index.html ./
-
-# Expose port
-EXPOSE 8080
-
-# Start the application
-CMD ["npm", "start"]
-```
-
-**frontend/.dockerignore**:
-```
-node_modules
-npm-debug.log
-.git
-.gitignore
-README.md
-```
-
-### Step 6: Create Docker Bake Configuration
-
-**docker-bake.hcl**:
-```hcl
-# Define variables
-variable "REGISTRY" {
-  default = "localhost:5000"
-}
-
-variable "TAG" {
-  default = "latest"
-}
-
-# Define groups for different build scenarios
-group "default" {
-  targets = ["base", "api", "worker", "frontend"]
-}
-
-group "services" {
-  targets = ["api", "worker", "frontend"]
-}
-
-# Shared base image
-target "base" {
-  context = "./shared"
-  dockerfile = "Dockerfile.base"
-  tags = ["myapp-base:${TAG}"]
-  cache-from = ["type=local,src=/tmp/.buildx-cache"]
-  cache-to = ["type=local,dest=/tmp/.buildx-cache,mode=max"]
-}
-
-# API service
-target "api" {
-  context = "./api"
-  tags = ["${REGISTRY}/myapp-api:${TAG}"]
-  depends-on = ["base"]
-  cache-from = ["type=local,src=/tmp/.buildx-cache"]
-  cache-to = ["type=local,dest=/tmp/.buildx-cache,mode=max"]
-}
-
-# Worker service
-target "worker" {
-  context = "./worker"
-  tags = ["${REGISTRY}/myapp-worker:${TAG}"]
-  depends-on = ["base"]
-  cache-from = ["type=local,src=/tmp/.buildx-cache"]
-  cache-to = ["type=local,dest=/tmp/.buildx-cache,mode=max"]
-}
-
-# Frontend service
-target "frontend" {
-  context = "./frontend"
-  tags = ["${REGISTRY}/myapp-frontend:${TAG}"]
-  depends-on = ["base"]
-  cache-from = ["type=local,src=/tmp/.buildx-cache"]
-  cache-to = ["type=local,dest=/tmp/.buildx-cache,mode=max"]
-}
-
-# Multi-platform builds
-target "api-multiplatform" {
-  inherits = ["api"]
-  platforms = ["linux/amd64", "linux/arm64"]
-}
-
-target "worker-multiplatform" {
-  inherits = ["worker"]
-  platforms = ["linux/amd64", "linux/arm64"]
-}
-
-target "frontend-multiplatform" {
-  inherits = ["frontend"]
-  platforms = ["linux/amd64", "linux/arm64"]
-}
-```
-
-### Step 7: Create Build Scripts
-
-**scripts/build-traditional.sh**:
 ```bash
-#!/bin/bash
-set -e
+#create a builder instance with caching support
+====> docker buildx create --name mybuilder --use
 
-echo "Building with traditional Docker commands..."
-echo "============================================"
+#bootstrap the new builder
+====> docker buildx inspect --bootstrap
 
-# Record start time
-start_time=$(date +%s)
-
-# Build base image
-echo "Building base image..."
-docker build -t myapp-base:latest ./shared -f ./shared/Dockerfile.base
-
-# Build service images
-echo "Building API service..."
-docker build -t localhost:5000/myapp-api:latest ./api
-
-echo "Building worker service..."
-docker build -t localhost:5000/myapp-worker:latest ./worker
-
-echo "Building frontend service..."
-docker build -t localhost:5000/myapp-frontend:latest ./frontend
-
-# Calculate build time
-end_time=$(date +%s)
-build_time=$((end_time - start_time))
-
-echo "Traditional build completed in ${build_time} seconds"
-echo "Images built:"
-docker images | grep myapp
+#build images using docker buildx bake with the new builder
+====> docker buildx bake --allow=fs=/tmp/.buildx-cache --progress=plain
 ```
 
-**scripts/build-bake.sh**:
+NOTE: bake builds all the images in the bake file in parallel, in the case where there is a shared service that contains args, dependencies that all other services uses, it has to be build first before other services, so we make sure that the share service is first in the bake file
+
 ```bash
-#!/bin/bash
-set -e
+#Build only the base image first
+====> docker buildx bake base --allow=fs=/tmp/.buildx-cache --progress=plain --load
 
-echo "Building with Docker Bake..."
-echo "============================"
-
-# Record start time
-start_time=$(date +%s)
-
-# Ensure buildx cache directory exists
-mkdir -p /tmp/.buildx-cache
-
-# Build all targets
-docker buildx bake --progress=plain
-
-# Calculate build time
-end_time=$(date +%s)
-build_time=$((end_time - start_time))
-
-echo "Bake build completed in ${build_time} seconds"
-echo "Images built:"
-docker images | grep myapp
+#Now build other services using the docker buildx bake
+====> docker buildx bake services --allow=fs=/tmp/.buildx-cache --progress-plain --load
 ```
 
-**scripts/build-depot.sh**:
+NOTE: for the pattern above our docker buildx builder is running in a container and dosen't have access to the local Docker daemon's images, so we can try building out everything at once but ensuring that the base image is available to the builder
+
 ```bash
-#!/bin/bash
-set -e
-
-echo "Building with Depot..."
-echo "====================="
-
-# Check if depot is installed
-if ! command -v depot &> /dev/null; then
-    echo "Depot CLI not found. Installing..."
-    curl -L https://depot.dev/install-cli.sh | sh
-fi
-
-# Record start time
-start_time=$(date +%s)
-
-# Build with depot (requires depot project setup)
-# Replace 'your-project-id' with your actual Depot project ID
-depot bake --project=your-project-id
-
-# Calculate build time
-end_time=$(date +%s)
-build_time=$((end_time - start_time))
-
-echo "Depot build completed in ${build_time} seconds"
-echo "Images built:"
-docker images | grep myapp
+#switching back to the default builder
+====> docker buildx use default
+#build using bake
+====> docker buildx bake --progress=plain
 ```
+One thing i learned here is that when we omit the caching in the docker-bake.hcl file, we created a simplified docker-bake-simple.hcl file and this built the images correctly
+```docker buildx bake -f docker-bake-simple.hcl --progress=plain```
 
-### Step 8: Create Docker Compose for Testing
+## Tag and Push the images to my remote docker registry
+firstly ill retag the images and then push them to my remote repository
+```docker tag localhost:5000/myapp-worker:latest <repo-name>/myapp-worker:latest && docker push <repo-name>/myapp-worker:latest```
+for example: using my docker hub registry username=opsmithe
 
-**docker-compose.yml**:
-```yaml
-version: '3.8'
+```docker tag localhost:5000/myapp-worker:latest opsmithe/myapp-worker:latest && docker push opsmithe/myapp-worker:latest```
 
-services:
-  api:
-    image: localhost:5000/myapp-api:latest
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=development
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+do same for all other images
 
-  worker:
-    image: localhost:5000/myapp-worker:latest
-    environment:
-      - NODE_ENV=development
-    depends_on:
-      - api
-
-  frontend:
-    image: localhost:5000/myapp-frontend:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - API_URL=http://api:3000
-      - NODE_ENV=development
-    depends_on:
-      - api
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-networks:
-  default:
-    name: myapp-network
-```
+## TEST
+Testing the API health endpoint
+```curl -s http://localhost:3000/health```
+Testing the API data endpoint
+```curl -s http://localhost:3000/data```
+Test the frontend 
+```curl -s http://localhost:8080 | head -10```
+Too see the worker logs checking if its working correctly
+```docker-compose logs worker --tail=5```
 
 ## Build Cache Strategies
 
@@ -804,18 +348,29 @@ depot status
 
 ## Testing the Setup
 
-### 1. Traditional Build Test
+### 1. Build Time Comparison (Recommended First Step)
+```bash
+# Run the comprehensive build time comparison
+./scripts/compare-build-times.sh
+```
+This script will:
+- Build the frontend service using traditional Docker build
+- Build the same service using Docker Bake
+- Test rebuild performance after simulating a code change
+- Show detailed timing results and efficiency gains
+
+### 2. Traditional Build Test
 ```bash
 chmod +x scripts/*.sh
 ./scripts/build-traditional.sh
 ```
 
-### 2. Bake Build Test
+### 3. Bake Build Test
 ```bash
 ./scripts/build-bake.sh
 ```
 
-### 3. Run the Application
+### 5. Run the Application
 ```bash
 docker-compose up -d
 ```
@@ -824,7 +379,7 @@ Visit:
 - Frontend: http://localhost:8080
 - API: http://localhost:3000/health
 
-### 4. Test Cache Efficiency
+### 6. Test Cache Efficiency
 ```bash
 # Make a small change to one service
 echo "console.log('Cache test');" >> api/server.js
